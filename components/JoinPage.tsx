@@ -4,61 +4,54 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { db, doc, setDoc, serverTimestamp } from '../services/firebase';
 import { ZewuBrandLogo } from './Logo';
-import { Loader2, MessageCircle, ExternalLink } from 'lucide-react';
+import { Loader2, MessageCircle, MoreVertical, ExternalLink, AlertCircle } from 'lucide-react';
 
 const metaEnv = (import.meta as any).env || {};
 const MY_LIFF_ID = metaEnv.VITE_LIFF_ID || "";
 const LINE_OA_URL = metaEnv.VITE_LINE_OA_URL || "";
-const PLATFORM_VERSION = "ZEWU_MODULAR_V10_PRO";
+const PLATFORM_VERSION = "ZEWU_MODULAR_V11_FINAL";
 
 const JoinPage: React.FC = () => {
-  const [status, setStatus] = useState<'detecting' | 'redirecting' | 'error' | 'manual'>('detecting');
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [status, setStatus] = useState<'detecting' | 'redirecting' | 'in_jail' | 'manual'>('detecting');
+  const [debugInfo, setDebugInfo] = useState<string>("");
   const isProcessing = useRef(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const source = params.get('src') || params.get('source') || 'instagram_bio';
+    const source = params.get('src') || params.get('source') || 'social_bio';
     
-    // 1. 偵測是否在 Instagram 或 Facebook 內
-    const ua = navigator.userAgent || navigator.vendor || (window as any).opera;
+    // 1. 偵測環境
+    const ua = navigator.userAgent || navigator.vendor;
     const isSocialIAB = /Instagram|FBAN|FBAV/i.test(ua);
+    const isLineIAB = /Line/i.test(ua);
 
-    // 如果在 IG 內，且還沒跳轉過，優先嘗試使用 Universal Link 喚起 LINE
+    // 如果在 IG/FB 內，且還沒有 Token (表示剛進來)
+    // 這是最關鍵的一步：提示用戶離開 IG
     if (isSocialIAB && !window.location.hash.includes('access_token')) {
-      setStatus('redirecting');
-      // 使用 liff.line.me 網址是最穩定的喚起方式
-      const liffUrl = `https://liff.line.me/${MY_LIFF_ID}?src=${source}`;
-      window.location.href = liffUrl;
-      
-      // 設定一個安全計時器，如果 3 秒後還在原地，顯示手動按鈕
-      setTimeout(() => setStatus('manual'), 3000);
+      setStatus('in_jail');
       return;
     }
 
-    // 2. 正常 LIFF 初始化流程
-    const secureBridge = async () => {
+    const initLiff = async () => {
       if (isProcessing.current) return;
       isProcessing.current = true;
 
       try {
         const liff = window.liff;
-        if (!liff) throw new Error('LINE SDK Load Failed');
-
-        await liff.init({ liffId: MY_LIFF_ID });
-
-        // 如果在外部瀏覽器且未登入
-        if (!liff.isLoggedIn()) {
-          // 使用替代方案：引導至 LINE App 內開啟，避開網頁輸入密碼
-          if (isSocialIAB) {
-            liff.login();
-          } else {
-            liff.login({ redirectUri: window.location.href });
-          }
+        if (!liff) {
+          setStatus('manual');
           return;
         }
 
-        // 成功取得資料
+        await liff.init({ liffId: MY_LIFF_ID });
+
+        if (!liff.isLoggedIn()) {
+          // 如果在外部瀏覽器但未登入，嘗試登入
+          liff.login({ redirectUri: window.location.href });
+          return;
+        }
+
+        // 成功登入，獲取資料
         const idToken = liff.getDecodedIDToken();
         const profile = idToken ? {
           userId: idToken.sub,
@@ -66,7 +59,7 @@ const JoinPage: React.FC = () => {
           pictureUrl: idToken.picture || ''
         } : await liff.getProfile();
 
-        // 紀錄進 Firebase
+        // 寫入 Firebase
         const userSourceRef = doc(db, "user_sources", profile.userId);
         await setDoc(userSourceRef, {
           userId: profile.userId,
@@ -78,29 +71,63 @@ const JoinPage: React.FC = () => {
           lastSeen: Date.now()
         }, { merge: true });
 
-        // 最後跳轉至 LINE 官方帳號
+        // 跳轉
         setStatus('redirecting');
         window.location.replace(LINE_OA_URL);
 
       } catch (err: any) {
-        console.error('Bridge Error:', err);
-        setErrorMessage('請點擊下方按鈕開啟 LINE');
+        console.error('LIFF Init Error:', err);
+        setDebugInfo(err.message || "Init Failed");
         setStatus('manual');
       }
     };
 
-    secureBridge();
+    initLiff();
   }, []);
+
+  // 引導畫面：當用戶在 IG 監獄時顯示
+  if (status === 'in_jail') {
+    return (
+      <div className="fixed inset-0 bg-white flex flex-col items-center justify-start p-10 animate-fade-in">
+        <div className="w-full flex justify-end mb-10 opacity-40">
+          <div className="flex flex-col items-center gap-1">
+            <MoreVertical size={24} />
+            <span className="text-[10px] font-bold">點擊右上角</span>
+          </div>
+        </div>
+        
+        <div className="flex-1 flex flex-col items-center justify-center text-center">
+          <div className="w-32 h-32 mb-8 opacity-20">
+            <ZewuBrandLogo color="#333" />
+          </div>
+          <h2 className="text-lg font-bold text-gray-800 mb-4 tracking-tight">請在外部瀏覽器開啟</h2>
+          <p className="text-sm text-gray-500 leading-relaxed mb-8 px-4">
+            Instagram 限制了 App 跳轉功能。<br/>請點擊右上角「<MoreVertical className="inline h-4" />」並選擇<br/>
+            <span className="text-blue-600 font-bold">「在瀏覽器中開啟」</span><br/>即可快速加入官方 LINE。
+          </p>
+          
+          <button 
+            onClick={() => window.location.href = `https://liff.line.me/${MY_LIFF_ID}`}
+            className="flex items-center gap-2 px-8 py-4 bg-[#06C755] text-white rounded-full font-bold shadow-lg"
+          >
+            <ExternalLink size={18} />
+            嘗試直接開啟 LINE
+          </button>
+        </div>
+        
+        <div className="mt-auto pb-10">
+           <p className="text-[10px] text-gray-300 tracking-[0.3em] uppercase">Zewu Design Optimization</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 flex flex-col items-center justify-center bg-[#fafafa] p-8 overflow-hidden">
-      {/* 核心 Logo 動畫區 */}
       <div className="w-full max-w-[300px] flex flex-col items-center animate-fade-in">
         <div className="relative mb-12">
           <div className="w-48 h-64 flex items-center justify-center relative">
-            <ZewuBrandLogo className={`w-full h-full transition-opacity duration-700 ${status === 'error' ? 'opacity-20' : 'opacity-100'}`} color="#333333" />
-            
-            {/* 掃描動效 */}
+            <ZewuBrandLogo className="w-full h-full" color="#333333" />
             {status !== 'manual' && (
               <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-24 h-[1px] bg-[#eeeeee] overflow-hidden">
                 <div className="h-full bg-[#333333] animate-scan-line"></div>
@@ -109,56 +136,42 @@ const JoinPage: React.FC = () => {
           </div>
         </div>
 
-        {/* 狀態文字 */}
-        <div className="text-center space-y-4">
-          <div className="flex items-center justify-center gap-3">
-            {status === 'redirecting' || status === 'detecting' ? (
-              <>
-                <Loader2 className="w-3 h-3 text-[#333] animate-spin" />
-                <span className="text-[10px] text-[#333] font-light tracking-[0.4em] uppercase">Redirecting to LINE</span>
-              </>
-            ) : status === 'manual' ? (
-              <span className="text-[10px] text-red-800/60 font-medium tracking-[0.2em]">{errorMessage || '無法自動跳轉？'}</span>
-            ) : null}
-          </div>
-        </div>
-
-        {/* 操作按鈕 */}
-        <div className="mt-12 w-full flex flex-col gap-4 items-center">
-          {status === 'manual' ? (
-            <button 
-              onClick={() => window.location.href = `https://liff.line.me/${MY_LIFF_ID}`}
-              className="flex items-center gap-3 px-8 py-4 bg-[#06C755] text-white rounded-full font-bold text-sm shadow-lg shadow-[#06C755]/20 hover:scale-105 active:scale-95 transition-all"
-            >
-              <MessageCircle size={18} fill="white" />
-              立即開啟 LINE 諮詢
-            </button>
+        <div className="text-center">
+          {status === 'redirecting' || status === 'detecting' ? (
+            <div className="flex items-center justify-center gap-3">
+              <Loader2 className="w-3 h-3 text-[#333] animate-spin" />
+              <span className="text-[10px] text-[#333] font-light tracking-[0.4em] uppercase">Processing...</span>
+            </div>
           ) : (
-            <p className="text-[9px] text-gray-300 font-light tracking-widest uppercase">Secured by Zewu Design</p>
-          )}
-
-          {status === 'manual' && (
-            <button 
-              onClick={() => window.location.href = LINE_OA_URL}
-              className="text-[10px] text-gray-400 underline underline-offset-4 font-light tracking-tight"
-            >
-              直接前往官方帳號 (不紀錄來源)
-            </button>
+            <div className="flex flex-col items-center gap-6">
+              <div className="p-3 bg-red-50 rounded-full">
+                 <AlertCircle className="w-5 h-5 text-red-400" />
+              </div>
+              <p className="text-xs text-gray-400 font-light leading-loose">
+                自動跳轉受限，請點擊下方按鈕<br/>或檢查網路連線
+              </p>
+              <button 
+                onClick={() => window.location.href = `https://liff.line.me/${MY_LIFF_ID}`}
+                className="px-10 py-4 bg-[#333] text-white rounded-full text-xs font-bold tracking-widest hover:bg-black transition-all"
+              >
+                手動開啟 LINE
+              </button>
+              <button 
+                onClick={() => window.location.href = LINE_OA_URL}
+                className="text-[10px] text-gray-400 underline underline-offset-4"
+              >
+                略過紀錄，直接前往
+              </button>
+            </div>
           )}
         </div>
-      </div>
-
-      {/* 底部裝飾 */}
-      <div className="absolute bottom-12 flex flex-col items-center gap-4 opacity-10">
-        <div className="w-[1px] h-12 bg-[#333333]"></div>
-        <span className="text-[8px] font-bold tracking-[0.6em] uppercase text-[#333333]">Interior Architecture</span>
       </div>
 
       <style>{`
         @keyframes scan-line { 0% { transform: translateX(-100%); } 50% { transform: translateX(0); } 100% { transform: translateX(100%); } }
         .animate-scan-line { animation: scan-line 2s infinite ease-in-out; }
-        @keyframes fade-in { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-        .animate-fade-in { animation: fade-in 1s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+        @keyframes fade-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fade-in 0.8s ease-out forwards; }
       `}</style>
     </div>
   );
