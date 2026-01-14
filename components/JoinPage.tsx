@@ -1,13 +1,17 @@
-
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { db, doc, setDoc, serverTimestamp } from '../services/firebase';
 import { Loader2, MessageCircle, ExternalLink, ShieldCheck } from 'lucide-react';
 
-// 從環境變數讀取配置，若無則使用預設值
-const MY_LIFF_ID = process.env.VITE_LIFF_ID || "2008826901-DGGr1P8u";
-const LINE_OA_URL = process.env.VITE_LINE_OA_URL || "https://lin.ee/GRgdkQe";
+/**
+ * 從環境變數讀取配置
+ * 確保您已在環境中設定 VITE_LIFF_ID 與 VITE_LINE_OA_URL
+ */
+// Fix: Cast import.meta to any to resolve "Property 'env' does not exist" error
+const metaEnv = (import.meta as any).env || {};
+const MY_LIFF_ID = metaEnv.VITE_LIFF_ID || "";
+const LINE_OA_URL = metaEnv.VITE_LINE_OA_URL || "";
 const PLATFORM_VERSION = "ZEWU_LIFF_PRO_V4";
 
 const ZewuIcon: React.FC<{ className?: string }> = ({ className }) => (
@@ -25,10 +29,18 @@ const JoinPage: React.FC = () => {
   const [showManualBtn, setShowManualBtn] = useState(false);
 
   const handleManualRedirect = useCallback(() => {
-    window.location.href = LINE_OA_URL;
+    if (LINE_OA_URL) {
+      window.location.href = LINE_OA_URL;
+    }
   }, []);
 
   useEffect(() => {
+    if (!MY_LIFF_ID || !LINE_OA_URL) {
+      setError('系統配置缺失，請聯繫管理員');
+      setShowManualBtn(true);
+      return;
+    }
+
     const initLiff = async () => {
       try {
         const liff = window.liff;
@@ -36,7 +48,6 @@ const JoinPage: React.FC = () => {
           throw new Error('LIFF SDK 載入失敗');
         }
 
-        // 1. 捕捉行銷來源 (?src=)
         const params = new URLSearchParams(window.location.search);
         const source = params.get('src') || params.get('source') || sessionStorage.getItem('zewu_marketing_src') || 'direct';
 
@@ -47,24 +58,21 @@ const JoinPage: React.FC = () => {
         setStatus('正在連接 LINE...');
         await liff.init({ liffId: MY_LIFF_ID });
 
-        // 2. 登入檢查
         if (!liff.isLoggedIn()) {
           setStatus('正在導向登入...');
           liff.login({ redirectUri: window.location.href }); 
           return;
         }
 
-        // 3. 獲取用戶資料
         setStatus('正在同步數據...');
         const profile = await liff.getProfile();
 
-        // 4. 寫入資料庫
-        // 依照截圖需求：文件ID為 userId，並包含 lineUserId 等欄位
+        // 寫入資料庫
         const userSourceRef = doc(db, "user_sources", profile.userId);
         await setDoc(userSourceRef, {
           userId: profile.userId,
           displayName: profile.displayName,
-          lineUserId: profile.displayName, // 映射到截圖中的 lineUserId
+          lineUserId: profile.displayName,
           source: source,
           pictureUrl: profile.pictureUrl || '',
           platform: PLATFORM_VERSION,
@@ -72,10 +80,8 @@ const JoinPage: React.FC = () => {
           lastSeen: Date.now()
         }, { merge: true });
 
-        // 清除暫存
         sessionStorage.removeItem('zewu_marketing_src');
 
-        // 5. 自動跳轉
         setStatus('即將進入官方帳號...');
         window.location.replace(LINE_OA_URL);
 
