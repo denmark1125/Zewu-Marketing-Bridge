@@ -1,0 +1,5 @@
+{
+  "name": "Zewu Marketing Bridge",
+  "description": "A lightweight LIFF-based marketing gateway for capturing user sources and redirecting to LINE Official Account.",
+  "requestFramePermissions": []
+}
