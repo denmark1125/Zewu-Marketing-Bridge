@@ -5,9 +5,10 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { db, doc, setDoc, serverTimestamp } from '../services/firebase';
 import { Loader2, MessageCircle, ExternalLink, ShieldCheck } from 'lucide-react';
 
-const MY_LIFF_ID = "2008826901-DGGr1P8u";
-const LINE_OA_URL = "https://lin.ee/GRgdkQe";
-const PLATFORM_VERSION = "ZEWU_LIFF_PRO_V4"; // 這裡定義您的版本號
+// 從環境變數讀取配置，若無則使用預設值
+const MY_LIFF_ID = process.env.VITE_LIFF_ID || "2008826901-DGGr1P8u";
+const LINE_OA_URL = process.env.VITE_LINE_OA_URL || "https://lin.ee/GRgdkQe";
+const PLATFORM_VERSION = "ZEWU_LIFF_PRO_V4";
 
 const ZewuIcon: React.FC<{ className?: string }> = ({ className }) => (
   <svg viewBox="0 0 100 150" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
@@ -35,7 +36,7 @@ const JoinPage: React.FC = () => {
           throw new Error('LIFF SDK 載入失敗');
         }
 
-        // 1. 抓取網址參數 (?src=xxx)
+        // 1. 捕捉行銷來源 (?src=)
         const params = new URLSearchParams(window.location.search);
         const source = params.get('src') || params.get('source') || sessionStorage.getItem('zewu_marketing_src') || 'direct';
 
@@ -53,20 +54,20 @@ const JoinPage: React.FC = () => {
           return;
         }
 
-        // 3. 取得 LINE 個人檔案
+        // 3. 獲取用戶資料
         setStatus('正在同步數據...');
         const profile = await liff.getProfile();
 
-        // 4. 寫入資料庫 (Firestore)
-        // 使用 profile.userId 作為文件 ID，確保資料唯一性
+        // 4. 寫入資料庫
+        // 依照截圖需求：文件ID為 userId，並包含 lineUserId 等欄位
         const userSourceRef = doc(db, "user_sources", profile.userId);
         await setDoc(userSourceRef, {
           userId: profile.userId,
           displayName: profile.displayName,
-          lineUserId: profile.displayName, // 照您截圖顯示，這裡存暱稱
+          lineUserId: profile.displayName, // 映射到截圖中的 lineUserId
           source: source,
           pictureUrl: profile.pictureUrl || '',
-          platform: PLATFORM_VERSION, // 更新為您的版本號: ZEWU_LIFF_PRO_V4
+          platform: PLATFORM_VERSION,
           createdAt: serverTimestamp(),
           lastSeen: Date.now()
         }, { merge: true });
@@ -74,7 +75,7 @@ const JoinPage: React.FC = () => {
         // 清除暫存
         sessionStorage.removeItem('zewu_marketing_src');
 
-        // 5. 自動跳轉到官方帳號
+        // 5. 自動跳轉
         setStatus('即將進入官方帳號...');
         window.location.replace(LINE_OA_URL);
 
