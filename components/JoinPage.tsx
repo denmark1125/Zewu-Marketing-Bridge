@@ -3,7 +3,18 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { db, doc, setDoc, serverTimestamp } from '../services/firebase';
 import { ZewuBrandLogo } from './Logo';
-import { Loader2, ArrowRight, ShieldCheck, AlertCircle, ExternalLink } from 'lucide-react';
+import { 
+  Loader2, 
+  ArrowRight, 
+  Copy, 
+  CheckCircle2, 
+  MoreHorizontal, 
+  Compass, 
+  MessageSquare, 
+  ShieldCheck,
+  AlertCircle,
+  ExternalLink
+} from 'lucide-react';
 
 const getEnv = (key: string): string => {
   const metaEnv = (import.meta as any).env;
@@ -14,12 +25,32 @@ const getEnv = (key: string): string => {
 
 const MY_LIFF_ID = getEnv("VITE_LIFF_ID");
 const LINE_OA_URL = getEnv("VITE_LINE_OA_URL");
+const LINE_SEARCH_ID = "@zewu"; 
 
 const JoinPage: React.FC = () => {
   const [status, setStatus] = useState<'detecting' | 'in_social_app' | 'processing' | 'manual'>('detecting');
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [isOpening, setIsOpening] = useState(false);
+  const [copied, setCopied] = useState(false);
   const isProcessing = useRef(false);
+
+  // 取得最佳跳轉連結 (針對不同 OS 繞過 IAB)
+  const getDeepLink = () => {
+    const ua = navigator.userAgent.toLowerCase();
+    const liffUrl = `https://liff.line.me/${MY_LIFF_ID}${window.location.search}`;
+    
+    // Android 專用 Intent (最強力繞過方式)
+    if (/android/.test(ua)) {
+      return `intent://liff.line.me/${MY_LIFF_ID}${window.location.search}#Intent;scheme=https;package=jp.naver.line.android;S.browser_fallback_url=${encodeURIComponent(liffUrl)};end`;
+    }
+    
+    // iOS 優先嘗試直接 Scheme
+    if (/iphone|ipad|ipod/.test(ua)) {
+      return `line://app/${MY_LIFF_ID}${window.location.search}`;
+    }
+
+    return liffUrl;
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -30,14 +61,21 @@ const JoinPage: React.FC = () => {
     const isFB = /FBAN|FBAV/i.test(ua);
     const isSocialApp = isInstagram || isFB;
 
-    const isLiffContext = window.location.hash.includes('access_token') || 
-                         window.location.hash.includes('id_token') || 
-                         params.has('liff.state') || 
-                         ua.includes('Line/');
+    const isLiffCallback = window.location.hash.includes('access_token') || 
+                          window.location.hash.includes('id_token') || 
+                          params.has('liff.state') || 
+                          ua.includes('Line/');
 
-    if (isSocialApp && !isLiffContext) {
+    if (isSocialApp && !isLiffCallback) {
       setStatus('in_social_app');
-      return;
+      
+      // 在社交軟體內，延遲 500ms 嘗試自動跳轉一次 (對部分 Android 有效)
+      const timer = setTimeout(() => {
+        const link = getDeepLink();
+        window.location.href = link;
+      }, 800);
+      
+      return () => clearTimeout(timer);
     }
 
     const startBridge = async () => {
@@ -46,9 +84,7 @@ const JoinPage: React.FC = () => {
       setStatus('processing');
 
       try {
-        if (!MY_LIFF_ID) throw new Error("Config missing");
-        if (!window.liff) throw new Error("SDK failed");
-
+        if (!MY_LIFF_ID || !window.liff) throw new Error("Connection failed");
         await window.liff.init({ liffId: MY_LIFF_ID });
 
         if (!window.liff.isLoggedIn()) {
@@ -57,7 +93,6 @@ const JoinPage: React.FC = () => {
         }
 
         const profile = await window.liff.getProfile().catch(() => null);
-        
         if (profile && db) {
           const userSourceRef = doc(db, "user_sources", profile.userId);
           setDoc(userSourceRef, {
@@ -69,36 +104,46 @@ const JoinPage: React.FC = () => {
             lastSeen: Date.now(),
             platform: 'LIFF_BRIDGE',
             ua: ua
-          }, { merge: true }).catch(e => console.warn("Log skip", e));
+          }, { merge: true }).catch(() => {});
         }
 
         window.location.replace(LINE_OA_URL);
-
       } catch (err: any) {
-        console.error('Bridge Error:', err);
-        setErrorMsg(err.message || "Unknown Error");
+        setErrorMsg(err.message || "Retry needed");
         setStatus('manual');
       }
     };
 
-    if (!isSocialApp || isLiffContext) {
-      startBridge();
-    }
+    startBridge();
   }, []);
 
   const handleManualJump = () => {
     if (isOpening) return;
     setIsOpening(true);
-    const liffJumpUrl = `https://liff.line.me/${MY_LIFF_ID}${window.location.search}`;
-    // 使用 window.location.href 在 IG 內跳轉通常比 <a> 標籤穩定
-    window.location.href = liffJumpUrl;
+    window.location.href = getDeepLink();
+    setTimeout(() => setIsOpening(false), 3000);
+  };
+
+  const handleCopyId = () => {
+    navigator.clipboard.writeText(LINE_SEARCH_ID);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   if (status === 'in_social_app') {
     return (
-      <div className="fixed inset-0 bg-white flex flex-col items-center justify-center p-10 z-[9999]">
-        <div className="w-full max-w-sm flex flex-col items-center">
-          <div className="w-24 h-32 mb-10">
+      <div className="fixed inset-0 bg-white flex flex-col items-center z-[9999] overflow-y-auto">
+        {/* 頂部引導：根據設備顯示不同提示 */}
+        <div className="w-full bg-black text-white py-3 px-6 flex items-center justify-between text-[10px] font-bold tracking-[0.2em] uppercase">
+          <div className="flex items-center gap-2">
+            <AlertCircle size={14} className="text-yellow-400" />
+            點擊右上角「...」選擇外部瀏覽器開啟
+          </div>
+          <ExternalLink size={14} />
+        </div>
+
+        <div className="flex-1 w-full max-w-sm flex flex-col items-center justify-center p-10">
+          <div className="w-20 h-28 mb-12">
             <ZewuBrandLogo color="#1a1a1a" />
           </div>
           
@@ -107,37 +152,57 @@ const JoinPage: React.FC = () => {
             <p className="text-[10px] text-gray-400 uppercase tracking-[0.4em]">ZEWU INTERIOR DESIGN</p>
           </div>
 
-          <p className="text-xs text-gray-500 mb-12 tracking-wider leading-relaxed text-center">
-            即將為您開啟官方 LINE 諮詢服務<br/>
-            點擊下方按鈕立即啟動
-          </p>
-
-          <button 
-            onClick={handleManualJump}
-            disabled={isOpening}
-            className="group relative w-full overflow-hidden bg-[#1a1a1a] text-white py-5 rounded-xl flex items-center justify-center gap-3 font-bold text-base shadow-2xl transition-all active:scale-[0.97] touch-none"
-            style={{ touchAction: 'manipulation' }}
-          >
-            {isOpening ? (
-              <Loader2 className="animate-spin" size={20} />
-            ) : (
-              <>
-                開啟 LINE 諮詢 <ArrowRight size={18} />
-              </>
-            )}
-            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000"></div>
-          </button>
+          <div className="w-full space-y-4">
+            <button 
+              onClick={handleManualJump}
+              disabled={isOpening}
+              className="group relative w-full bg-[#1a1a1a] text-white py-5 rounded-xl flex items-center justify-center gap-3 font-bold text-base shadow-2xl active:scale-[0.98] transition-all"
+            >
+              {isOpening ? <Loader2 className="animate-spin" size={20} /> : <>立即開啟 LINE 諮詢 <ArrowRight size={18} /></>}
+            </button>
+            
+            <p className="text-center text-[10px] text-gray-400 font-medium italic">
+              * 若點擊後無反應，請參考上方提示開啟瀏覽器
+            </p>
+          </div>
           
-          <button 
-            onClick={handleManualJump}
-            className="mt-6 text-[10px] text-gray-400 flex items-center gap-1 border-b border-gray-200 pb-0.5"
-          >
-            按鈕無反應？點此重試 <ExternalLink size={10} />
-          </button>
+          <div className="w-full flex items-center gap-4 my-12">
+            <div className="flex-1 h-[1px] bg-gray-100"></div>
+            <span className="text-[10px] text-gray-300 font-bold uppercase tracking-[0.3em]">手動搜尋備案</span>
+            <div className="flex-1 h-[1px] bg-gray-100"></div>
+          </div>
 
-          <div className="mt-16 flex items-center gap-2 text-[9px] text-gray-300 uppercase tracking-[0.2em]">
+          {/* 手動複製 ID 區塊 - 強化 @zewu 呼籲 */}
+          <div className="w-full bg-slate-50 rounded-2xl p-6 border border-slate-100">
+            <p className="text-[11px] text-slate-500 font-bold uppercase tracking-widest text-center mb-5">
+              官方 LINE 諮詢 ID
+            </p>
+            <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl px-4 py-4 shadow-sm">
+              <div className="flex flex-col">
+                <span className="text-[8px] text-slate-300 font-bold uppercase tracking-tighter">Line ID</span>
+                <span className="font-mono font-black text-lg text-slate-800 tracking-tight">{LINE_SEARCH_ID}</span>
+              </div>
+              <button 
+                onClick={handleCopyId}
+                className={`flex items-center gap-1.5 text-xs font-bold px-4 py-2.5 rounded-lg transition-all ${copied ? 'bg-green-500 text-white' : 'bg-slate-900 text-white hover:bg-black'}`}
+              >
+                {copied ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+                {copied ? "已複製" : "點擊複製"}
+              </button>
+            </div>
+            <div className="mt-5 flex items-start gap-2 text-slate-400">
+              <MessageSquare size={12} className="mt-0.5 shrink-0" />
+              <p className="text-[10px] leading-relaxed">
+                複製 ID 後，請至 LINE 的「加入好友」頁面貼上搜尋並加入諮詢。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="pb-10 flex flex-col items-center gap-3">
+          <div className="flex items-center gap-2 text-[9px] text-gray-300 uppercase tracking-[0.3em] font-medium">
             <ShieldCheck size={10} />
-            Secure Encrypted Bridge
+            Direct Encryption Link
           </div>
         </div>
       </div>
@@ -146,38 +211,26 @@ const JoinPage: React.FC = () => {
 
   return (
     <div className="fixed inset-0 flex flex-col items-center justify-center bg-white">
-      <div className="w-32 h-40 mb-10 animate-pulse duration-1000">
+      <div className="w-24 h-32 mb-8 opacity-10">
         <ZewuBrandLogo color="#1a1a1a" />
       </div>
-      
-      <div className="h-6 flex items-center justify-center">
-        {status === 'processing' || status === 'detecting' ? (
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-12 h-[1px] bg-gray-100 relative overflow-hidden">
-              <div className="absolute inset-0 bg-black animate-loading-bar"></div>
-            </div>
-            <span className="text-[9px] text-gray-300 tracking-[0.4em] uppercase ml-[0.4em]">Connecting</span>
-          </div>
-        ) : status === 'manual' ? (
-          <div className="flex flex-col items-center gap-2 text-center px-6">
-            <p className="text-[9px] text-red-400 tracking-widest uppercase">{errorMsg || "Connection Error"}</p>
-            <button 
-              onClick={() => window.location.reload()}
-              className="text-[9px] font-bold border-b border-black pb-0.5 tracking-[0.2em] uppercase mt-2"
-            >
-              Retry
-            </button>
-          </div>
-        ) : null}
+      <div className="flex flex-col items-center gap-5">
+        <div className="relative w-8 h-8">
+           <div className="absolute inset-0 border-2 border-gray-100 rounded-full"></div>
+           <div className="absolute inset-0 border-2 border-black rounded-full border-t-transparent animate-spin"></div>
+        </div>
+        <div className="flex flex-col items-center gap-1">
+          <span className="text-[9px] text-gray-400 tracking-[0.6em] uppercase font-bold">Secure Redirecting</span>
+          <span className="text-[8px] text-gray-200 tracking-[0.2em] font-medium uppercase">Please hold on</span>
+        </div>
       </div>
       
-      <style>{`
-        @keyframes loading-bar {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(100%); }
-        }
-        .animate-loading-bar { animation: loading-bar 1s infinite ease-in-out; }
-      `}</style>
+      {status === 'manual' && (
+        <div className="mt-12 flex flex-col items-center gap-4">
+           <p className="text-[10px] text-red-400 tracking-[0.2em] font-bold uppercase">{errorMsg}</p>
+           <button onClick={() => window.location.reload()} className="text-[10px] font-bold border-b-2 border-black pb-1 tracking-[0.2em]">RETRY CONNECTION</button>
+        </div>
+      )}
     </div>
   );
 };
