@@ -1,18 +1,14 @@
+
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { db, doc, setDoc, serverTimestamp } from '../services/firebase';
-import { Loader2, MessageCircle, ExternalLink, ShieldCheck } from 'lucide-react';
+import { Loader2, ShieldCheck } from 'lucide-react';
 
-/**
- * 從環境變數讀取配置
- * 確保您已在環境中設定 VITE_LIFF_ID 與 VITE_LINE_OA_URL
- */
-// Fix: Cast import.meta to any to resolve "Property 'env' does not exist" error
 const metaEnv = (import.meta as any).env || {};
 const MY_LIFF_ID = metaEnv.VITE_LIFF_ID || "";
 const LINE_OA_URL = metaEnv.VITE_LINE_OA_URL || "";
-const PLATFORM_VERSION = "ZEWU_LIFF_PRO_V4";
+const PLATFORM_VERSION = "ZEWU_SECURE_V6";
 
 const ZewuIcon: React.FC<{ className?: string }> = ({ className }) => (
   <svg viewBox="0 0 100 150" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
@@ -24,137 +20,115 @@ const ZewuIcon: React.FC<{ className?: string }> = ({ className }) => (
 );
 
 const JoinPage: React.FC = () => {
-  const [status, setStatus] = useState('正在初始化...');
   const [error, setError] = useState<string | null>(null);
-  const [showManualBtn, setShowManualBtn] = useState(false);
-
-  const handleManualRedirect = useCallback(() => {
-    if (LINE_OA_URL) {
-      window.location.href = LINE_OA_URL;
-    }
-  }, []);
+  const isProcessing = useRef(false);
 
   useEffect(() => {
     if (!MY_LIFF_ID || !LINE_OA_URL) {
-      setError('系統配置缺失，請聯繫管理員');
-      setShowManualBtn(true);
+      setError('Config Error');
       return;
     }
 
-    const initLiff = async () => {
+    const secureBridge = async () => {
+      if (isProcessing.current) return;
+      isProcessing.current = true;
+
       try {
         const liff = window.liff;
-        if (!liff) {
-          throw new Error('LIFF SDK 載入失敗');
-        }
+        if (!liff) throw new Error('No SDK');
 
-        const params = new URLSearchParams(window.location.search);
-        const source = params.get('src') || params.get('source') || sessionStorage.getItem('zewu_marketing_src') || 'direct';
-
-        if (source !== 'direct') {
-          sessionStorage.setItem('zewu_marketing_src', source);
-        }
-
-        setStatus('正在連接 LINE...');
+        // 1. 初始化 LIFF
         await liff.init({ liffId: MY_LIFF_ID });
 
+        // 2. 檢查登入
         if (!liff.isLoggedIn()) {
-          setStatus('正在導向登入...');
-          liff.login({ redirectUri: window.location.href }); 
+          liff.login({ redirectUri: window.location.href });
           return;
         }
 
-        setStatus('正在同步數據...');
-        const profile = await liff.getProfile();
+        // 3. 獲取數據 (優先解碼 Token)
+        const idToken = liff.getDecodedIDToken();
+        const profile = idToken ? {
+          userId: idToken.sub,
+          displayName: idToken.name || 'LINE User',
+          pictureUrl: idToken.picture || ''
+        } : await liff.getProfile();
 
-        // 寫入資料庫
+        // 4. 解析來源
+        const params = new URLSearchParams(window.location.search);
+        const source = params.get('src') || params.get('source') || 'direct';
+
+        // 5. 執行寫入並等待完成 (確保數據一筆都不掉)
         const userSourceRef = doc(db, "user_sources", profile.userId);
         await setDoc(userSourceRef, {
           userId: profile.userId,
           displayName: profile.displayName,
-          lineUserId: profile.displayName,
           source: source,
-          pictureUrl: profile.pictureUrl || '',
+          pictureUrl: profile.pictureUrl,
           platform: PLATFORM_VERSION,
           createdAt: serverTimestamp(),
           lastSeen: Date.now()
         }, { merge: true });
 
-        sessionStorage.removeItem('zewu_marketing_src');
-
-        setStatus('即將進入官方帳號...');
+        // 6. 確認寫入成功後才執行跳轉
         window.location.replace(LINE_OA_URL);
 
-        const timer = setTimeout(() => setShowManualBtn(true), 3500);
-        return () => clearTimeout(timer);
-
       } catch (err: any) {
-        console.error('LIFF/Firebase Error:', err);
-        setError('系統處理中，請點擊下方按鈕加入');
-        setShowManualBtn(true);
+        console.error('Secure Bridge Error:', err);
+        // 若發生非預期錯誤，顯示錯誤按鈕供手動跳轉，避免完全卡死
+        setError('系統處理中，請稍候或手動加入');
       }
     };
 
-    initLiff();
+    secureBridge();
   }, []);
 
   return (
-    <div className="fixed inset-0 flex flex-col items-center justify-center bg-white p-8 text-center overflow-hidden font-sans">
-      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-slate-100 via-[#54534d] to-slate-100 opacity-20"></div>
-      
-      <div className="relative mb-10 group">
-        <div className="w-24 h-24 bg-slate-50 rounded-[40px] flex items-center justify-center relative transition-transform duration-500 group-hover:scale-110">
-          <ZewuIcon className="w-12 h-12 text-[#54534d]" />
-          <div className="absolute inset-[-8px] border-[2px] border-[#54534d] border-t-transparent rounded-[48px] animate-spin-slow opacity-10"></div>
-          {!error && (
-            <div className="absolute inset-0 border-4 border-[#54534d] border-t-transparent rounded-[40px] animate-spin opacity-20"></div>
-          )}
+    <div className="fixed inset-0 flex flex-col items-center justify-center bg-white p-8 overflow-hidden">
+      <div className="relative">
+        <div className="w-20 h-20 bg-slate-50 rounded-[30px] flex items-center justify-center relative overflow-hidden">
+          <ZewuIcon className="w-10 h-10 text-[#54534d] z-10" />
+          <div className="absolute inset-0 border-2 border-[#54534d] border-t-transparent rounded-[30px] animate-spin opacity-40"></div>
+          <div className="absolute inset-0 bg-gradient-to-tr from-white/0 via-white/50 to-white/0 animate-shimmer"></div>
         </div>
       </div>
       
-      <div className="space-y-6 max-w-xs w-full">
+      <div className="mt-8 space-y-4 text-center">
         <div className="space-y-1">
-          <h1 className="text-2xl font-black text-slate-800 tracking-tight">澤物設計</h1>
-          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-[0.4em]">Zewu Interior Design</p>
-        </div>
-        
-        <div className="flex flex-col items-center justify-center gap-3">
-          {error ? (
-            <div className="bg-red-50 px-4 py-2 rounded-full border border-red-100">
-              <p className="text-red-500 font-bold text-xs">{error}</p>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 bg-slate-50 px-4 py-2 rounded-full border border-slate-100">
-              <Loader2 className="w-3 h-3 text-[#54534d] animate-spin" />
-              <p className="text-[#54534d] font-bold text-[10px] tracking-[0.2em] uppercase">{status}</p>
-            </div>
-          )}
+          <h1 className="text-xl font-bold text-slate-800 tracking-wider">澤物設計</h1>
+          <p className="text-[9px] text-slate-400 font-bold uppercase tracking-[0.3em]">Connecting to LINE...</p>
         </div>
 
-        <div className={`transition-all duration-500 transform ${showManualBtn ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
-          <button 
-            onClick={handleManualRedirect}
-            className="group w-full bg-[#06C755] text-white py-4 px-6 rounded-2xl font-black text-sm shadow-xl active:scale-[0.97] transition-all flex items-center justify-center gap-3 animate-bounce-slow"
-          >
-            <MessageCircle className="w-5 h-5 fill-current" />
-            點此加入 LINE 好友
-            <ExternalLink className="w-4 h-4 opacity-70 group-hover:translate-x-1 transition-transform" />
-          </button>
+        <div className="flex items-center justify-center gap-2">
+          <Loader2 className="w-3 h-3 text-[#54534d] animate-spin" />
+          <span className="text-[10px] text-slate-500 font-medium italic">
+            {error ? '資料處理中' : '安全驗證中'}
+          </span>
         </div>
       </div>
 
-      <div className="absolute bottom-12 left-0 right-0 flex flex-col items-center gap-3">
-        <div className="flex items-center gap-3 px-4 py-2 bg-slate-50/50 rounded-full border border-slate-100/50">
-          <ShieldCheck className="w-3 h-3 text-slate-300" />
-          <span className="text-[9px] text-slate-400 font-bold uppercase tracking-[0.3em]">Official Service Bridge</span>
-        </div>
+      {(error || true) && (
+        <button 
+          onClick={() => window.location.href = LINE_OA_URL}
+          className={`mt-10 px-6 py-3 bg-[#06C755] text-white rounded-xl font-bold text-sm shadow-lg transition-opacity duration-500 ${error ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        >
+          立即進入官方帳號
+        </button>
+      )}
+
+      <div className="absolute bottom-10 flex items-center gap-2 opacity-30">
+        <ShieldCheck className="w-3 h-3" />
+        <span className="text-[8px] font-bold tracking-widest uppercase">Verified & Secure Bridge</span>
       </div>
 
       <style>{`
-        @keyframes spin-slow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        @keyframes bounce-slow { 0%, 100% { transform: translateY(-3%); } 50% { transform: translateY(0); } }
-        .animate-spin-slow { animation: spin-slow 8s linear infinite; }
-        .animate-bounce-slow { animation: bounce-slow 2s infinite; }
+        @keyframes shimmer {
+          0% { transform: translateX(-100%) rotate(45deg); }
+          100% { transform: translateX(100%) rotate(45deg); }
+        }
+        .animate-shimmer {
+          animation: shimmer 1.5s infinite;
+        }
       `}</style>
     </div>
   );
