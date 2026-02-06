@@ -1,3 +1,4 @@
+
 'use client';
 
 import React, { useEffect, useState, useRef } from 'react';
@@ -8,8 +9,6 @@ import {
   ArrowRight, 
   Copy, 
   CheckCircle2, 
-  MoreHorizontal, 
-  Compass, 
   MessageSquare, 
   ShieldCheck,
   AlertCircle,
@@ -34,17 +33,14 @@ const JoinPage: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const isProcessing = useRef(false);
 
-  // 取得最佳跳轉連結 (針對不同 OS 繞過 IAB)
   const getDeepLink = () => {
     const ua = navigator.userAgent.toLowerCase();
     const liffUrl = `https://liff.line.me/${MY_LIFF_ID}${window.location.search}`;
     
-    // Android 專用 Intent (最強力繞過方式)
     if (/android/.test(ua)) {
       return `intent://liff.line.me/${MY_LIFF_ID}${window.location.search}#Intent;scheme=https;package=jp.naver.line.android;S.browser_fallback_url=${encodeURIComponent(liffUrl)};end`;
     }
     
-    // iOS 優先嘗試直接 Scheme
     if (/iphone|ipad|ipod/.test(ua)) {
       return `line://app/${MY_LIFF_ID}${window.location.search}`;
     }
@@ -54,6 +50,7 @@ const JoinPage: React.FC = () => {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    // 優先抓取 src 或 source 參數
     const source = params.get('src') || params.get('source') || 'social_bio';
     const ua = navigator.userAgent || navigator.vendor;
     
@@ -61,20 +58,18 @@ const JoinPage: React.FC = () => {
     const isFB = /FBAN|FBAV/i.test(ua);
     const isSocialApp = isInstagram || isFB;
 
+    // 判斷是否為 LIFF 回調或 LINE 內部瀏覽器
     const isLiffCallback = window.location.hash.includes('access_token') || 
                           window.location.hash.includes('id_token') || 
                           params.has('liff.state') || 
                           ua.includes('Line/');
 
+    // 如果是在 IG/FB 且不是 LIFF 回調，則觸發深層連結跳轉
     if (isSocialApp && !isLiffCallback) {
       setStatus('in_social_app');
-      
-      // 在社交軟體內，延遲 500ms 嘗試自動跳轉一次 (對部分 Android 有效)
       const timer = setTimeout(() => {
-        const link = getDeepLink();
-        window.location.href = link;
+        window.location.href = getDeepLink();
       }, 800);
-      
       return () => clearTimeout(timer);
     }
 
@@ -93,22 +88,31 @@ const JoinPage: React.FC = () => {
         }
 
         const profile = await window.liff.getProfile().catch(() => null);
+        
+        // --- 核心資料寫入邏輯：寫入至 line_connections ---
         if (profile && db) {
-          const userSourceRef = doc(db, "user_sources", profile.userId);
-          setDoc(userSourceRef, {
-            userId: profile.userId,
-            displayName: profile.displayName,
-            source: source,
-            pictureUrl: profile.pictureUrl,
-            createdAt: serverTimestamp(),
-            lastSeen: Date.now(),
-            platform: 'LIFF_BRIDGE',
-            ua: ua
-          }, { merge: true }).catch(() => {});
+          const connectionRef = doc(db, "line_connections", profile.userId);
+          await setDoc(connectionRef, {
+            UserId: profile.userId,              // U... 開頭的 LINE UID
+            lineUserId: profile.displayName,     // 使用者名稱 (如：施文喆)
+            linePictureUrl: profile.pictureUrl || "",
+            isBlocked: false,
+            isBound: true,
+            timestamp: serverTimestamp(),        // Firebase 伺服器時間
+            source: source,                      // 追蹤行銷來源 (src=xxx)
+            platform: 'LIFF_MARKETING_BRIDGE'
+          }, { merge: true }).catch(e => console.error("Firestore Error:", e));
         }
 
-        window.location.replace(LINE_OA_URL);
+        // 完成後跳轉至 LINE 官方帳號 URL
+        if (LINE_OA_URL) {
+          window.location.replace(LINE_OA_URL);
+        } else {
+          setStatus('manual');
+          setErrorMsg("Configuration missing: LINE_OA_URL");
+        }
       } catch (err: any) {
+        console.error("Bridge Error:", err);
         setErrorMsg(err.message || "Retry needed");
         setStatus('manual');
       }
@@ -130,10 +134,10 @@ const JoinPage: React.FC = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // 如果是在社群 App (IG/FB) 內開啟
   if (status === 'in_social_app') {
     return (
       <div className="fixed inset-0 bg-white flex flex-col items-center z-[9999] overflow-y-auto">
-        {/* 頂部引導：根據設備顯示不同提示 */}
         <div className="w-full bg-black text-white py-3 px-6 flex items-center justify-between text-[10px] font-bold tracking-[0.2em] uppercase">
           <div className="flex items-center gap-2">
             <AlertCircle size={14} className="text-yellow-400" />
@@ -142,7 +146,7 @@ const JoinPage: React.FC = () => {
           <ExternalLink size={14} />
         </div>
 
-        <div className="flex-1 w-full max-w-sm flex flex-col items-center justify-center p-10">
+        <div className="flex-1 w-full max-sm flex flex-col items-center justify-center p-10">
           <div className="w-20 h-28 mb-12">
             <ZewuBrandLogo color="#1a1a1a" />
           </div>
@@ -160,10 +164,7 @@ const JoinPage: React.FC = () => {
             >
               {isOpening ? <Loader2 className="animate-spin" size={20} /> : <>立即開啟 LINE 諮詢 <ArrowRight size={18} /></>}
             </button>
-            
-            <p className="text-center text-[10px] text-gray-400 font-medium italic">
-              * 若點擊後無反應，請參考上方提示開啟瀏覽器
-            </p>
+            <p className="text-center text-[10px] text-gray-400 font-medium italic">* 若點擊後無反應，請參考上方提示開啟瀏覽器</p>
           </div>
           
           <div className="w-full flex items-center gap-4 my-12">
@@ -172,11 +173,8 @@ const JoinPage: React.FC = () => {
             <div className="flex-1 h-[1px] bg-gray-100"></div>
           </div>
 
-          {/* 手動複製 ID 區塊 - 強化 @zewu 呼籲 */}
           <div className="w-full bg-slate-50 rounded-2xl p-6 border border-slate-100">
-            <p className="text-[11px] text-slate-500 font-bold uppercase tracking-widest text-center mb-5">
-              官方 LINE 諮詢 ID
-            </p>
+            <p className="text-[11px] text-slate-500 font-bold uppercase tracking-widest text-center mb-5">官方 LINE 諮詢 ID</p>
             <div className="flex items-center justify-between bg-white border border-slate-200 rounded-xl px-4 py-4 shadow-sm">
               <div className="flex flex-col">
                 <span className="text-[8px] text-slate-300 font-bold uppercase tracking-tighter">Line ID</span>
@@ -190,25 +188,20 @@ const JoinPage: React.FC = () => {
                 {copied ? "已複製" : "點擊複製"}
               </button>
             </div>
-            <div className="mt-5 flex items-start gap-2 text-slate-400">
-              <MessageSquare size={12} className="mt-0.5 shrink-0" />
-              <p className="text-[10px] leading-relaxed">
-                複製 ID 後，請至 LINE 的「加入好友」頁面貼上搜尋並加入諮詢。
-              </p>
-            </div>
           </div>
         </div>
 
         <div className="pb-10 flex flex-col items-center gap-3">
           <div className="flex items-center gap-2 text-[9px] text-gray-300 uppercase tracking-[0.3em] font-medium">
             <ShieldCheck size={10} />
-            Direct Encryption Link
+            Secure Bridge Connection
           </div>
         </div>
       </div>
     );
   }
 
+  // 預設跳轉狀態
   return (
     <div className="fixed inset-0 flex flex-col items-center justify-center bg-white">
       <div className="w-24 h-32 mb-8 opacity-10">
@@ -221,7 +214,7 @@ const JoinPage: React.FC = () => {
         </div>
         <div className="flex flex-col items-center gap-1">
           <span className="text-[9px] text-gray-400 tracking-[0.6em] uppercase font-bold">Secure Redirecting</span>
-          <span className="text-[8px] text-gray-200 tracking-[0.2em] font-medium uppercase">Please hold on</span>
+          <span className="text-[8px] text-gray-200 tracking-[0.2em] font-medium uppercase">Redirecting to LINE OA</span>
         </div>
       </div>
       
