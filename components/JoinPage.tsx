@@ -9,21 +9,35 @@ import {
   ArrowRight, 
   Copy, 
   CheckCircle2, 
-  MessageSquare, 
   ShieldCheck,
   AlertCircle,
   ExternalLink
 } from 'lucide-react';
 
+/**
+ * 強化的環境變數讀取工具
+ * 優先讀取 process.env (標準)，其次為 import.meta.env (Vite)
+ */
 const getEnv = (key: string): string => {
-  const metaEnv = (import.meta as any).env;
-  if (metaEnv && metaEnv[key]) return metaEnv[key];
-  if (typeof process !== 'undefined' && process.env && process.env[key]) return process.env[key] as string;
+  if (typeof process !== 'undefined' && process.env && process.env[key]) {
+    return process.env[key] as string;
+  }
+  try {
+    const metaEnv = (import.meta as any).env;
+    if (metaEnv && metaEnv[key]) return metaEnv[key];
+  } catch (e) {}
+  
+  // 嘗試從 window 全域變數讀取 (部分環境會注入)
+  if (typeof window !== 'undefined' && (window as any)._env_ && (window as any)._env_[key]) {
+    return (window as any)._env_[key];
+  }
+  
   return "";
 };
 
-const MY_LIFF_ID = getEnv("VITE_LIFF_ID");
-const LINE_OA_URL = getEnv("VITE_LINE_OA_URL");
+// 取得設定值 - 優先尋找不帶 VITE_ 前綴的標準變數
+const MY_LIFF_ID = getEnv("VITE_LIFF_ID") || getEnv("LIFF_ID");
+const LINE_OA_URL = getEnv("VITE_LINE_OA_URL") || getEnv("LINE_OA_URL");
 const LINE_SEARCH_ID = "@zewu"; 
 
 const JoinPage: React.FC = () => {
@@ -50,7 +64,7 @@ const JoinPage: React.FC = () => {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    // 優先抓取 src 或 source 參數
+    // 務必統一來源寫入名稱：抓取 src 參數
     const source = params.get('src') || params.get('source') || 'social_bio';
     const ua = navigator.userAgent || navigator.vendor;
     
@@ -58,17 +72,15 @@ const JoinPage: React.FC = () => {
     const isFB = /FBAN|FBAV/i.test(ua);
     const isSocialApp = isInstagram || isFB;
 
-    // 判斷是否為 LIFF 回調或 LINE 內部瀏覽器
     const isLiffCallback = window.location.hash.includes('access_token') || 
                           window.location.hash.includes('id_token') || 
                           params.has('liff.state') || 
                           ua.includes('Line/');
 
-    // 如果是在 IG/FB 且不是 LIFF 回調，則觸發深層連結跳轉
     if (isSocialApp && !isLiffCallback) {
       setStatus('in_social_app');
       const timer = setTimeout(() => {
-        window.location.href = getDeepLink();
+        if (MY_LIFF_ID) window.location.href = getDeepLink();
       }, 800);
       return () => clearTimeout(timer);
     }
@@ -79,7 +91,15 @@ const JoinPage: React.FC = () => {
       setStatus('processing');
 
       try {
-        if (!MY_LIFF_ID || !window.liff) throw new Error("Connection failed");
+        // 檢查 LIFF ID 是否存在
+        if (!MY_LIFF_ID) {
+          throw new Error("Missing LIFF ID. Please check your environment variables (LIFF_ID).");
+        }
+        
+        if (!window.liff) {
+          throw new Error("LINE SDK not loaded");
+        }
+
         await window.liff.init({ liffId: MY_LIFF_ID });
 
         if (!window.liff.isLoggedIn()) {
@@ -89,22 +109,24 @@ const JoinPage: React.FC = () => {
 
         const profile = await window.liff.getProfile().catch(() => null);
         
-        // --- 核心資料寫入邏輯：寫入至 line_connections ---
+        // --- 核心資料寫入邏輯：統一名稱與格式 ---
         if (profile && db) {
           const connectionRef = doc(db, "line_connections", profile.userId);
-          await setDoc(connectionRef, {
-            UserId: profile.userId,              // U... 開頭的 LINE UID
-            lineUserId: profile.displayName,     // 使用者名稱 (如：施文喆)
-            linePictureUrl: profile.pictureUrl || "",
-            isBlocked: false,
-            isBound: true,
-            timestamp: serverTimestamp(),        // Firebase 伺服器時間
-            source: source,                      // 追蹤行銷來源 (src=xxx)
-            platform: 'LIFF_MARKETING_BRIDGE'
-          }, { merge: true }).catch(e => console.error("Firestore Error:", e));
+          
+          const dataToSave = {
+            UserId: profile.userId,              // U... (string)
+            lineUserId: profile.displayName,     // 顯示名稱 (string)，如截圖中的 "Wayne"
+            linePictureUrl: profile.pictureUrl || "", // 頭像 URL (string)
+            isBlocked: false,                    // (boolean)
+            isBound: false,                      // 根據需求更新為 false (boolean)
+            timestamp: serverTimestamp(),        // 統一使用資料庫時間 (timestamp)
+            source: source                       // 統一來源追蹤名稱
+          };
+
+          await setDoc(connectionRef, dataToSave, { merge: true });
         }
 
-        // 完成後跳轉至 LINE 官方帳號 URL
+        // 完成後跳轉至官方帳號
         if (LINE_OA_URL) {
           window.location.replace(LINE_OA_URL);
         } else {
@@ -112,8 +134,8 @@ const JoinPage: React.FC = () => {
           setErrorMsg("Configuration missing: LINE_OA_URL");
         }
       } catch (err: any) {
-        console.error("Bridge Error:", err);
-        setErrorMsg(err.message || "Retry needed");
+        console.error("Bridge Error Detail:", err);
+        setErrorMsg(err.message || "Connection failed");
         setStatus('manual');
       }
     };
@@ -122,7 +144,7 @@ const JoinPage: React.FC = () => {
   }, []);
 
   const handleManualJump = () => {
-    if (isOpening) return;
+    if (isOpening || !MY_LIFF_ID) return;
     setIsOpening(true);
     window.location.href = getDeepLink();
     setTimeout(() => setIsOpening(false), 3000);
@@ -134,7 +156,6 @@ const JoinPage: React.FC = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // 如果是在社群 App (IG/FB) 內開啟
   if (status === 'in_social_app') {
     return (
       <div className="fixed inset-0 bg-white flex flex-col items-center z-[9999] overflow-y-auto">
@@ -201,7 +222,6 @@ const JoinPage: React.FC = () => {
     );
   }
 
-  // 預設跳轉狀態
   return (
     <div className="fixed inset-0 flex flex-col items-center justify-center bg-white">
       <div className="w-24 h-32 mb-8 opacity-10">
@@ -219,9 +239,16 @@ const JoinPage: React.FC = () => {
       </div>
       
       {status === 'manual' && (
-        <div className="mt-12 flex flex-col items-center gap-4">
-           <p className="text-[10px] text-red-400 tracking-[0.2em] font-bold uppercase">{errorMsg}</p>
-           <button onClick={() => window.location.reload()} className="text-[10px] font-bold border-b-2 border-black pb-1 tracking-[0.2em]">RETRY CONNECTION</button>
+        <div className="mt-12 flex flex-col items-center gap-4 px-6 text-center">
+           <p className="text-[11px] text-red-500 font-bold uppercase tracking-wider bg-red-50 px-4 py-2 rounded-lg border border-red-100">
+             {errorMsg}
+           </p>
+           <button onClick={() => window.location.reload()} className="text-[10px] font-bold border-b-2 border-black pb-1 tracking-[0.2em] hover:text-gray-500 transition-colors">
+             RETRY CONNECTION
+           </button>
+           <p className="text-[9px] text-gray-400 mt-2 italic text-wrap max-w-xs">
+             請確認環境變數 LIFF_ID 已正確填寫
+           </p>
         </div>
       )}
     </div>
